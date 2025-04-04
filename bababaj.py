@@ -1,11 +1,12 @@
 import telebot
-import json
+import simplejson as json
 import os
 import time
 import random
 from datetime import datetime
 import logging
 import uuid
+from decimal import Decimal
 
 # Logging ayarları
 logging.basicConfig(
@@ -44,13 +45,13 @@ if not os.path.exists(PRODUCT_IMAGES_DIR):
 def load_products():
     try:
         with open(products_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            return json.load(f, use_decimal=True)
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
 def save_products(products):
     with open(products_file, 'w', encoding='utf-8') as f:
-        json.dump(products, f, ensure_ascii=False, indent=4)
+        json.dump(products, f, ensure_ascii=False, indent=4, use_decimal=True)
 
 def add_product(product_name, price, city, image_id=None):
     """Ürünü JSON dosyasına ekler"""
@@ -60,7 +61,7 @@ def add_product(product_name, price, city, image_id=None):
     product = {
         "id": product_id,
         "name": product_name,
-        "price": price,
+        "price": Decimal(price),
         "city": city,
         "image_id": image_id,
         "date_added": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -80,13 +81,6 @@ def get_product_by_id(product_id):
     products = load_products()
     for product in products:
         if product.get('id') == product_id:
-            # Fiyatın sayı olduğundan emin ol
-            if isinstance(product.get('price'), str):
-                try:
-                    product['price'] = float(''.join(c for c in product['price'] if c.isdigit() or c == '.'))
-                except ValueError:
-                    logger.error(f"Ürün fiyatı dönüştürülemedi: {product.get('price')}")
-                    product['price'] = 0.0
             return product
     return None
 
@@ -322,19 +316,31 @@ def handle_product_selection(message):
     
     # Ürün bilgilerini ayır
     parts = message.text.split(' - ')
-    if len(parts) < 4:
+    if len(parts) < 5:
         bot.send_message(message.chat.id, "Ürün bilgisi hatalı.")
         return
     
     product_name = parts[0]
     product_price_str = parts[1]
     city = parts[2]
-    product_id = parts[3]
+    product_id = parts[4]  # ID'nin doğru parçada olduğundan emin olun
     
     # Fiyatı sayıya çevir
     try:
-        price = float(product_price_str.replace('$', ''))
-    except ValueError:
+        # Fiyatın boş olmadığını kontrol et
+        if not product_price_str:
+            raise ValueError("Fiyat bilgisi boş.")
+        
+        # $ işaretini ve diğer gereksiz karakterleri temizle
+        price_text = product_price_str.replace('$', '').strip()
+        
+        # Fiyatın geçerli bir sayı olup olmadığını kontrol et
+        if not price_text.replace('.', '', 1).isdigit():
+            raise ValueError(f"Geçersiz fiyat formatı: '{product_price_str}'")
+        
+        price = Decimal(price_text)
+    except (ValueError, TypeError) as e:
+        logger.error(f"Fiyat dönüştürme hatası: {str(e)} - Girilen değer: '{product_price_str}'")
         bot.send_message(message.chat.id, "Ürün fiyatı geçersiz.")
         return
     
@@ -347,7 +353,7 @@ def handle_product_selection(message):
     # Kullanıcı bakiyesini kontrol et
     user_id = message.from_user.id
     balances = read_balances()
-    user_balance = balances.get(str(user_id), {"balance": 0})["balance"]
+    user_balance = Decimal(balances.get(str(user_id), {"balance": 0})["balance"])
     
     if user_balance < price:
         bot.send_message(message.chat.id, f"Yetersiz bakiye! Bu ürün için ${price} gerekiyor. Mevcut bakiyeniz: ${user_balance}")
@@ -667,11 +673,9 @@ def add_product_price_entered(message, product_name, city):
         return admin_panel(message)
     
     try:
-        # Fiyat metnini temizle ve sadece sayısal değeri al
-        price_text = message.text.strip()
-        # Noktalama işaretlerini ve sembolleri kaldır
-        price_text = ''.join(c for c in price_text if c.isdigit() or c == '.')
-        price = float(price_text)
+        # Kullanıcıdan alınan fiyat bilgisini temizle ve sayıya çevir
+        fiyat_str = message.text.strip()
+        fiyat = Decimal(fiyat_str)
         
         # Teslimat resmi için klavye
         markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -682,16 +686,16 @@ def add_product_price_entered(message, product_name, city):
             "Teslimat resmini yükleyin (her resim 1 stok demektir):", 
             reply_markup=markup
         )
-        bot.register_next_step_handler(msg, lambda m: add_product_image_uploaded(m, product_name, price, city))
+        bot.register_next_step_handler(msg, lambda m: add_product_image_uploaded(m, product_name, fiyat, city))
     
-    except ValueError as e:
-        logger.error(f"Fiyat dönüştürme hatası: {str(e)} - Girilen değer: '{message.text}'")
+    except ValueError:
+        logger.error(f"Fiyat dönüştürme hatası: Girilen değer: '{message.text}'")
         markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
         markup.add("🔙 Admin Paneline Dön")
         
         msg = bot.send_message(
             message.chat.id, 
-            "Geçersiz fiyat. Lütfen sadece sayı girin (örn: 75):", 
+            "Geçersiz fiyat girdisi. Lütfen sayısal bir değer girin (örn: 75):", 
             reply_markup=markup
         )
         bot.register_next_step_handler(msg, lambda m: add_product_price_entered(m, product_name, city))
@@ -783,7 +787,7 @@ def add_balance_menu(message):
 def handle_balance_selection(message):
     amount_str = message.text.replace('💵 $', '')
     try:
-        amount = int(amount_str)
+        amount = Decimal(amount_str)
         
         # Ödeme bilgilerini göster
         payment_info = f"Bakiye eklemek için aşağıdaki TRC20 adresine ${amount} değerinde USDT gönderebilirsiniz:\n\n"
@@ -811,7 +815,7 @@ def handle_buy_callback(call):
     price_str = parts[2]
     
     try:
-        price = float(price_str)
+        price = Decimal(price_str)
         
         # Ürünü kontrol et
         product = get_product_by_id(product_id)
@@ -823,7 +827,7 @@ def handle_buy_callback(call):
         user_id = call.from_user.id
         username = call.from_user.username or f"user_{user_id}"
         balances = read_balances()
-        user_balance = balances.get(str(user_id), {"balance": 0})["balance"]
+        user_balance = Decimal(balances.get(str(user_id), {"balance": 0})["balance"])
         
         if user_balance < price:
             bot.answer_callback_query(call.id, "Yetersiz bakiye!")
@@ -1064,7 +1068,7 @@ def process_balance_change(message, target_user_id, operation):
         return admin_panel(message)
     
     try:
-        amount = float(message.text)
+        amount = Decimal(message.text)
         
         # Bakiyeyi güncelle
         balances = read_balances()
