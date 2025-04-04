@@ -79,7 +79,9 @@ def get_products_by_city(city):
 def get_product_by_id(product_id):
     """ID'ye göre ürün bulur"""
     products = load_products()
+    logger.info(f"Looking for product ID: {product_id}")
     for product in products:
+        logger.info(f"Checking product: {product.get('id')}")
         if product.get('id') == product_id:
             return product
     return None
@@ -321,33 +323,21 @@ def handle_product_selection(message):
         return
     
     product_name = parts[0]
-    product_price_str = parts[1]
     city = parts[2]
     product_id = parts[4]  # ID'nin doğru parçada olduğundan emin olun
-    
-    # Fiyatı sayıya çevir
-    try:
-        # Fiyatın boş olmadığını kontrol et
-        if not product_price_str:
-            raise ValueError("Fiyat bilgisi boş.")
-        
-        # $ işaretini ve diğer gereksiz karakterleri temizle
-        price_text = product_price_str.replace('$', '').strip()
-        
-        # Fiyatın geçerli bir sayı olup olmadığını kontrol et
-        if not price_text.replace('.', '', 1).isdigit():
-            raise ValueError(f"Geçersiz fiyat formatı: '{product_price_str}'")
-        
-        price = Decimal(price_text)
-    except (ValueError, TypeError) as e:
-        logger.error(f"Fiyat dönüştürme hatası: {str(e)} - Girilen değer: '{product_price_str}'")
-        bot.send_message(message.chat.id, "Ürün fiyatı geçersiz.")
-        return
     
     # Ürünü kontrol et
     product = get_product_by_id(product_id)
     if not product:
         bot.send_message(message.chat.id, "Seçilen ürün artık mevcut değil.")
+        return
+    
+    # Fiyatı al ve sayıya çevir
+    try:
+        price = Decimal(product['price'])
+    except (ValueError, TypeError) as e:
+        logger.error(f"Fiyat dönüştürme hatası: {str(e)} - Ürün ID: '{product_id}'")
+        bot.send_message(message.chat.id, "Ürün fiyatı geçersiz.")
         return
     
     # Kullanıcı bakiyesini kontrol et
@@ -1126,4 +1116,9 @@ if __name__ == "__main__":
     init_admins_file()
     
     logger.info("Bot started!")
-    bot.polling(none_stop=True)
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=20)
+        except Exception as e:
+            logger.error(f"Bot polling error: {e}")
+            time.sleep(15)  # Bir süre bekleyip yeniden dene
